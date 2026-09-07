@@ -10,7 +10,9 @@ try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    pass
+    if os.path.exists(".env"):
+        print("[AVISO] Se detectó un archivo .env pero 'python-dotenv' no está instalado.")
+        print("Instálalo ejecutando: pip install -r requirements.txt\n")
 
 WP_ERROR_PATTERNS = [
     "critical error on this website",
