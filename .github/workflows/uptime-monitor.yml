@@ -1,0 +1,23 @@
+name: "Tech Support - Uptime Monitor"
+
+on:
+  schedule:
+    - cron: '*/10 * * * *' # Cada 10 minutos
+  workflow_dispatch: # Permite ejecutarlo manualmente desde GitHub
+
+jobs:
+  check-health:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run Monitor
+        env:
+          MAKE_ALERT_WEBHOOK: ${{ secrets.MAKE_ALERT_WEBHOOK }}
+          SITES_CONFIG: ${{ secrets.SITES_CONFIG }} # JSON con la lista de clientes
+        run: python main.py
