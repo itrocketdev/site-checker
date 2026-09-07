@@ -18,6 +18,7 @@ sites.json
 .idea/
 *.swp
 *.swo
+pyrightconfig.json
 
 # OS files
 .DS_Store
