@@ -65,12 +65,15 @@ def check_site(site):
         return False, "Configuración inválida: falta el campo 'url'", 0
 
     start = time.time()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (SiteHealthChecker/1.0)"
+    }
     try:
-        response = requests.get(url, timeout=12, headers={"User-Agent": "TechSupportMonitor/1.0"})
+        response = requests.get(url, timeout=12, headers=headers)
         latency_ms = int((time.time() - start) * 1000)
         
-        # 1. Validar Código de Estado
-        if response.status_code != 200:
+        # 1. Validar Código de Estado (Permitir 200 OK, 202 Accepted y cualquier código 2xx exitoso)
+        if not (200 <= response.status_code < 300):
             return False, f"Status Code: {response.status_code}", latency_ms
         
         # 2. Validar Errores Silenciosos de WordPress
@@ -80,7 +83,8 @@ def check_site(site):
                 if pattern.lower() in response_text:
                     return False, f"WordPress Error Detectado: '{pattern}'", latency_ms
                     
-        return True, "OK", latency_ms
+        status_msg = "OK" if response.status_code == 200 else f"OK ({response.status_code})"
+        return True, status_msg, latency_ms
 
     except requests.exceptions.Timeout:
         return False, "Timeout (>12s)", 12000
@@ -99,6 +103,19 @@ def run_monitor():
         client = site.get("client", site.get("url", "Desconocido"))
         url = site.get("url", "")
         is_up, message, latency = check_site(site)
+        
+        # Si falló, realizar 1 reintento tras 3 segundos para confirmar que no sea un falso positivo
+        if not is_up:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {client}: Advertencia '{message}'. Reintentando en 3s...")
+            time.sleep(3)
+            is_up_retry, message_retry, latency_retry = check_site(site)
+            if is_up_retry:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {client}: Recuperado en reintento ({message_retry})")
+                is_up, message, latency = True, message_retry, latency_retry
+            else:
+                message = message_retry
+                latency = latency_retry
+
         status_label = "UP" if is_up else "DOWN"
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {client} ({url}): {status_label} - {message} ({latency}ms)")
         
