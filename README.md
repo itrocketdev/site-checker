@@ -9,7 +9,12 @@ El código está diseñado para ser alojado en un **repositorio público** de fo
 ## 🛠️ Características
 
 - **Monitoreo Periódico y Serverless**: Corre en GitHub Actions cada 10 minutos sin necesidad de un servidor dedicado.
-- **Detección de Caídas y Errores HTTP**: Alerta ante códigos distintos a 200 (404, 500, 502, etc.), timeouts (>12s) o errores de certificados SSL vencidos.
+- **Tolerancia a Fallos y Prevención de Falsos Positivos**:
+  - **Timeout extendido**: 30 segundos por defecto (personalizable globalmente o por cliente) para soportar sitios con CRMs pesados o cachés frías.
+  - **Triple Intento con Backoff Progresivo**: Si un sitio demora o falla, se realizan hasta 2 reintentos con esperas progresivas (5s y 10s) antes de confirmar una caída.
+  - **Cabeceras de Navegador Real**: Evasión de bloqueos o retardos generados por sistemas WAF/Anti-Bot de Cloudflare y LiteSpeed.
+  - **Lectura Optimizada (Streaming)**: Inspección rápida de los primeros 256 KB sin descargar megabytes de imágenes o assets innecesarios.
+- **Detección de Caídas y Errores HTTP**: Alerta ante códigos fuera del rango 2xx (404, 500, 502, etc.), timeouts o fallos de certificados SSL.
 - **Detección de Errores Silenciosos en WordPress**: Detecta fallos comunes que a veces responden HTTP 200 pero muestran pantallas blancas o mensajes de error:
   - *"critical error on this website"*
   - *"Error establishing a database connection"*
@@ -20,19 +25,19 @@ El código está diseñado para ser alojado en un **repositorio público** de fo
 
 ---
 
-## ⚙️ Configuración en GitHub Actions (Secrets)
+## ⚙️ Configuración en GitHub Actions (Secrets y Variables)
 
 Para que el script funcione en GitHub sin exponer la información de tus clientes:
 
 1. Ve a tu repositorio en GitHub: `https://github.com/itrocketdev/site-checker`.
 2. Dirígete a **Settings** > **Secrets and variables** > **Actions**.
-3. Haz clic en **New repository secret** y añade los siguientes dos secretos:
+3. Añade los siguientes secretos y variables opcionales:
 
-### 1. `MAKE_ALERT_WEBHOOK`
+### 1. `MAKE_ALERT_WEBHOOK` (Secret Requerido)
 - **Nombre**: `MAKE_ALERT_WEBHOOK`
 - **Valor**: La URL completa del webhook de Make (ej. `https://hook.us2.make.com/xxxxxxxxxxxxxxxxx`).
 
-### 2. `SITES_CONFIG`
+### 2. `SITES_CONFIG` (Secret Requerido)
 - **Nombre**: `SITES_CONFIG`
 - **Valor**: Lista de sitios en formato JSON (como un array de objetos):
 
@@ -41,7 +46,8 @@ Para que el script funcione en GitHub sin exponer la información de tus cliente
   {
     "client": "Cliente Ejemplo 1",
     "url": "https://ejemplo-wordpress.com/",
-    "type": "wordpress"
+    "type": "wordpress",
+    "timeout": 35
   },
   {
     "client": "Cliente Ejemplo 2",
@@ -56,7 +62,10 @@ Para que el script funcione en GitHub sin exponer la información de tus cliente
 ]
 ```
 
-> **Tip:** El campo `type` admite `"wordpress"` (habilita la inspección de errores de WP) o `"standard"` (valida solo código HTTP y conectividad).
+> **Campos opcionales por cliente:**
+> - `type`: `"wordpress"` (habilita detección de errores silenciosos de WP) o `"standard"` (valida solo código HTTP y conectividad).
+> - `timeout`: Tiempo de espera en segundos específico para ese cliente (por defecto `30`). Útil para sitios con CRM o backends pesados.
+> - `retries`: Cantidad de reintentos específicos antes de considerarlo caído (por defecto `2`).
 
 ---
 

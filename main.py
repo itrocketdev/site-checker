@@ -14,6 +14,20 @@ except ImportError:
         print("[AVISO] Se detectó un archivo .env pero 'python-dotenv' no está instalado.")
         print("Instálalo ejecutando: pip install -r requirements.txt\n")
 
+# Parámetros por defecto configurables vía variables de entorno
+DEFAULT_TIMEOUT = int(os.environ.get("CHECK_TIMEOUT", 30))
+DEFAULT_RETRIES = int(os.environ.get("CHECK_RETRIES", 2))
+DEFAULT_RETRY_DELAY = int(os.environ.get("CHECK_RETRY_DELAY", 5))
+
+# Cabeceras estándar de navegador moderno para evitar bloqueos/retardos de WAF (Cloudflare/LiteSpeed)
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
+
 WP_ERROR_PATTERNS = [
     "critical error on this website",
     "Error establishing a database connection",
@@ -60,38 +74,57 @@ def check_site(site):
     url = site.get("url")
     client = site.get("client", url)
     site_type = site.get("type", "wordpress").lower()
+    timeout = int(site.get("timeout", DEFAULT_TIMEOUT))
 
     if not url:
         return False, "Configuración inválida: falta el campo 'url'", 0
 
     start = time.time()
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (SiteHealthChecker/1.0)"
-    }
     try:
-        response = requests.get(url, timeout=12, headers=headers)
-        latency_ms = int((time.time() - start) * 1000)
-        
-        # 1. Validar Código de Estado (Permitir 200 OK, 202 Accepted y cualquier código 2xx exitoso)
-        if not (200 <= response.status_code < 300):
-            return False, f"Status Code: {response.status_code}", latency_ms
-        
-        # 2. Validar Errores Silenciosos de WordPress
-        if site_type == "wordpress":
-            response_text = response.text.lower()
-            for pattern in WP_ERROR_PATTERNS:
-                if pattern.lower() in response_text:
-                    return False, f"WordPress Error Detectado: '{pattern}'", latency_ms
-                    
-        status_msg = "OK" if response.status_code == 200 else f"OK ({response.status_code})"
-        return True, status_msg, latency_ms
+        # Timeout granular: (connect_timeout=10, read_timeout=timeout)
+        # stream=True para evitar descargar archivos gigantes si la web es pesada
+        with requests.get(url, timeout=(10, timeout), headers=BROWSER_HEADERS, stream=True) as response:
+            latency_ms = int((time.time() - start) * 1000)
+            
+            # 1. Validar Código de Estado (Permitir códigos 2xx exitosos: 200, 202, etc.)
+            if not (200 <= response.status_code < 300):
+                return False, f"Status Code: {response.status_code}", latency_ms
+            
+            # 2. Validar Errores Silenciosos de WordPress leyendo solo los primeros 256 KB
+            if site_type == "wordpress":
+                content_chunks = []
+                total_bytes = 0
+                for chunk in response.iter_content(chunk_size=32768, decode_unicode=True):
+                    if chunk:
+                        content_chunks.append(chunk)
+                        total_bytes += len(chunk)
+                        if total_bytes >= 262144: # 256 KB
+                            break
+                response_text = "".join(content_chunks).lower()
+                for pattern in WP_ERROR_PATTERNS:
+                    if pattern.lower() in response_text:
+                        return False, f"WordPress Error Detectado: '{pattern}'", latency_ms
+                        
+            status_msg = "OK" if response.status_code == 200 else f"OK ({response.status_code})"
+            return True, status_msg, latency_ms
 
     except requests.exceptions.Timeout:
-        return False, "Timeout (>12s)", 12000
+        return False, f"Tiempo de espera agotado (>{timeout}s)", int(timeout * 1000)
     except requests.exceptions.SSLError:
         return False, "Error de Certificado SSL / Vencido", 0
+    except requests.exceptions.ConnectionError as e:
+        err_str = str(e).lower()
+        if "reset" in err_str:
+            reason = "Conexión reseteada por el servidor/firewall"
+        elif "refused" in err_str:
+            reason = "Conexión rechazada por el servidor"
+        elif "name or service not known" in err_str or "getaddrinfo failed" in err_str:
+            reason = "Error DNS / Dominio no encontrado"
+        else:
+            reason = "Fallo de Conexión de Red / Servidor no respondió"
+        return False, reason, 0
     except requests.exceptions.RequestException as e:
-        return False, f"Fallo de Conexión: {str(e)[:100]}", 0
+        return False, f"Fallo en la petición: {str(e)[:80]}", 0
 
 def run_monitor():
     webhook_url = os.environ.get("MAKE_ALERT_WEBHOOK") or os.environ.get("MAKE_WEBHOOK_ALERT_URL")
@@ -102,19 +135,25 @@ def run_monitor():
     for site in sites:
         client = site.get("client", site.get("url", "Desconocido"))
         url = site.get("url", "")
-        is_up, message, latency = check_site(site)
-        
-        # Si falló, realizar 1 reintento tras 3 segundos para confirmar que no sea un falso positivo
-        if not is_up:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {client}: Advertencia '{message}'. Reintentando en 3s...")
-            time.sleep(3)
-            is_up_retry, message_retry, latency_retry = check_site(site)
-            if is_up_retry:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {client}: Recuperado en reintento ({message_retry})")
-                is_up, message, latency = True, message_retry, latency_retry
-            else:
-                message = message_retry
-                latency = latency_retry
+        max_retries = int(site.get("retries", DEFAULT_RETRIES))
+
+        is_up = False
+        message = ""
+        latency = 0
+
+        # Ciclo de intentos: intento inicial + reintentos con backoff progresivo
+        for attempt in range(1, max_retries + 2):
+            is_up, message, latency = check_site(site)
+            if is_up:
+                if attempt > 1:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {client}: Recuperado exitosamente en el intento {attempt}/{max_retries + 1} ({message})")
+                break
+
+            # Si falló y aún quedan reintentos, esperar con backoff progresivo
+            if attempt <= max_retries:
+                delay = DEFAULT_RETRY_DELAY * attempt
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {client} (Intento {attempt}/{max_retries + 1}): Fallo temporal '{message}'. Reintentando en {delay}s...")
+                time.sleep(delay)
 
         status_label = "UP" if is_up else "DOWN"
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {client} ({url}): {status_label} - {message} ({latency}ms)")
