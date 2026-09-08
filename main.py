@@ -15,9 +15,9 @@ except ImportError:
         print("Instálalo ejecutando: pip install -r requirements.txt\n")
 
 # Parámetros por defecto configurables vía variables de entorno
-DEFAULT_TIMEOUT = int(os.environ.get("CHECK_TIMEOUT", 30))
-DEFAULT_RETRIES = int(os.environ.get("CHECK_RETRIES", 2))
-DEFAULT_RETRY_DELAY = int(os.environ.get("CHECK_RETRY_DELAY", 5))
+DEFAULT_TIMEOUT = int(os.environ.get("CHECK_TIMEOUT", "30"))
+DEFAULT_RETRIES = int(os.environ.get("CHECK_RETRIES", "2"))
+DEFAULT_RETRY_DELAY = int(os.environ.get("CHECK_RETRY_DELAY", "5"))
 
 # Cabeceras estándar de navegador moderno para evitar bloqueos/retardos de WAF (Cloudflare/LiteSpeed)
 BROWSER_HEADERS = {
@@ -109,7 +109,7 @@ def check_site(site):
             return True, status_msg, latency_ms
 
     except requests.exceptions.Timeout:
-        return False, f"Tiempo de espera agotado (>{timeout}s)", int(timeout * 1000)
+        return False, f"Tiempo de espera agotado (>{timeout}s)", timeout * 1000
     except requests.exceptions.SSLError:
         return False, "Error de Certificado SSL / Vencido", 0
     except requests.exceptions.ConnectionError as e:
