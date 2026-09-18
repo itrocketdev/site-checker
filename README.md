@@ -11,7 +11,8 @@ El código está diseñado para ser alojado en un **repositorio público** de fo
 - **Monitoreo Periódico y Serverless**: Corre en GitHub Actions cada 10 minutos sin necesidad de un servidor dedicado.
 - **Tolerancia a Fallos y Prevención de Falsos Positivos**:
   - **Timeout extendido**: 30 segundos por defecto (personalizable globalmente o por cliente) para soportar sitios con CRMs pesados o cachés frías.
-  - **Triple Intento con Backoff Progresivo**: Si un sitio demora o falla, se realizan hasta 2 reintentos con esperas progresivas (5s y 10s) antes de confirmar una caída.
+  - **Triple Intento con Backoff Progresivo**: Si un sitio demora o falla, se realizan hasta 2 reintentos con esperas progresivas (5s y 10s) antes de confirmar una caída dentro de la misma corrida.
+  - **Confirmación entre Ejecuciones**: Una caída solo genera alerta si el sitio también falló en la ejecución programada anterior (por defecto 2 corridas consecutivas, `CHECK_CONFIRM_FAILURES`). Esto filtra falsos positivos causados por lentitud puntual de WAFs (Cloudflare/LiteSpeed) contra la IP efímera del runner de GitHub Actions, que normalmente se resuelve sola en la siguiente corrida.
   - **Cabeceras de Navegador Real**: Evasión de bloqueos o retardos generados por sistemas WAF/Anti-Bot de Cloudflare y LiteSpeed.
   - **Lectura Optimizada (Streaming)**: Inspección rápida de los primeros 256 KB sin descargar megabytes de imágenes o assets innecesarios.
 - **Detección de Caídas y Errores HTTP**: Alerta ante códigos fuera del rango 2xx (404, 500, 502, etc.), timeouts o fallos de certificados SSL.
@@ -67,6 +68,10 @@ Para que el script funcione en GitHub sin exponer la información de tus cliente
 > - `timeout`: Tiempo de espera en segundos específico para ese cliente (por defecto `30`). Útil para sitios con CRM o backends pesados.
 > - `retries`: Cantidad de reintentos específicos antes de considerarlo caído (por defecto `2`).
 
+### 3. `CHECK_CONFIRM_FAILURES` (Variable Opcional)
+- **Valor por defecto**: `2`.
+- Número de ejecuciones programadas **consecutivas** en las que un sitio debe salir DOWN antes de enviar la alerta a Make. Con el valor por defecto, una caída detectada en una sola corrida (p. ej. por lentitud momentánea de un WAF) no dispara alerta; debe repetirse en la corrida siguiente (~10 min después) para confirmarse. El conteo se guarda entre corridas mediante la caché de GitHub Actions (`state.json`).
+
 ---
 
 ## 📩 Payload Enviado a Make / Slack
@@ -80,6 +85,7 @@ Cuando un sitio está caído (`DOWN`), se envía una petición `POST` al webhook
   "status": "DOWN",
   "reason": "WordPress Error Detectado: 'Error establishing a database connection'",
   "latency_ms": 145,
+  "consecutive_failures": 2,
   "timestamp": "2026-09-07T14:30:00.000000"
 }
 ```

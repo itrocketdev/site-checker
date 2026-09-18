@@ -13,6 +13,9 @@ ENV/
 .env
 sites.json
 
+# Estado de monitoreo (conteo de fallos consecutivos entre ejecuciones)
+state.json
+
 # IDEs & editors
 .vscode/
 .idea/

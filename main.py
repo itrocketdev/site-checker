@@ -19,6 +19,14 @@ DEFAULT_TIMEOUT = int(os.environ.get("CHECK_TIMEOUT", "30"))
 DEFAULT_RETRIES = int(os.environ.get("CHECK_RETRIES", "2"))
 DEFAULT_RETRY_DELAY = int(os.environ.get("CHECK_RETRY_DELAY", "5"))
 
+# Confirmación entre ejecuciones: un sitio debe fallar en N ejecuciones programadas
+# consecutivas (no solo en los reintentos de una misma corrida) antes de avisar a Make.
+# Esto evita falsos positivos causados por lentitud puntual de WAFs (Cloudflare/LiteSpeed)
+# contra la IP efímera del runner de GitHub Actions, que normalmente se resuelve sola
+# en la siguiente corrida (10 min después, con un runner distinto).
+STATE_FILE = os.environ.get("STATE_FILE", "state.json")
+CHECK_CONFIRM_FAILURES = max(1, int(os.environ.get("CHECK_CONFIRM_FAILURES", "2")))
+
 # Cabeceras estándar de navegador moderno para evitar bloqueos/retardos de WAF (Cloudflare/LiteSpeed)
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -69,6 +77,23 @@ def load_sites_config():
     print("Error: No se encontró la configuración de sitios.")
     print("Asegúrate de definir la variable de entorno SITES_CONFIG o crear un archivo sites.json.")
     sys.exit(1)
+
+def load_state():
+    """Carga el conteo de fallos consecutivos por sitio (persistido entre ejecuciones)."""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_state(state):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except Exception as e:
+        print(f"[AVISO] No se pudo guardar el estado de monitoreo en {STATE_FILE}: {e}")
 
 def check_site(site):
     url = site.get("url")
@@ -129,12 +154,14 @@ def check_site(site):
 def run_monitor():
     webhook_url = os.environ.get("MAKE_ALERT_WEBHOOK") or os.environ.get("MAKE_WEBHOOK_ALERT_URL")
     sites = load_sites_config()
+    state = load_state()
 
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Iniciando monitoreo de {len(sites)} sitio(s)...")
 
     for site in sites:
         client = site.get("client", site.get("url", "Desconocido"))
         url = site.get("url", "")
+        state_key = url or client
         max_retries = int(site.get("retries", DEFAULT_RETRIES))
 
         is_up = False
@@ -157,27 +184,43 @@ def run_monitor():
 
         status_label = "UP" if is_up else "DOWN"
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {client} ({url}): {status_label} - {message} ({latency}ms)")
-        
-        if not is_up:
-            if not webhook_url:
-                print(f"  [AVISO] {client} está DOWN pero no se configuró MAKE_ALERT_WEBHOOK.")
-                continue
 
-            # Notificar a Make / Slack para que envíe alertas y registre el reporte
-            payload = {
-                "client": client,
-                "url": url,
-                "status": "DOWN",
-                "reason": message,
-                "latency_ms": latency,
-                "timestamp": datetime.now().isoformat()
-            }
-            try:
-                res = requests.post(webhook_url, json=payload, timeout=5)
-                if res.status_code >= 400:
-                    print(f"  [ALERTA] Webhook respondió con código {res.status_code}")
-            except Exception as e:
-                print(f"  [ERROR] Error enviando webhook para {client}: {e}")
+        if is_up:
+            state[state_key] = 0
+            continue
+
+        # Sitio falló todos los intentos de esta corrida: solo cuenta como una
+        # "ejecución fallida", no como caída confirmada todavía.
+        consecutive_failures = state.get(state_key, 0) + 1
+        state[state_key] = consecutive_failures
+
+        if consecutive_failures < CHECK_CONFIRM_FAILURES:
+            print(f"  [AVISO] {client}: falla sin confirmar ({consecutive_failures}/{CHECK_CONFIRM_FAILURES} ejecuciones). "
+                  f"Se confirmará en la próxima corrida antes de alertar.")
+            continue
+
+        if not webhook_url:
+            print(f"  [AVISO] {client} está DOWN (confirmado en {consecutive_failures} ejecuciones) pero no se configuró MAKE_ALERT_WEBHOOK.")
+            continue
+
+        # Notificar a Make / Slack para que envíe alertas y registre el reporte
+        payload = {
+            "client": client,
+            "url": url,
+            "status": "DOWN",
+            "reason": message,
+            "latency_ms": latency,
+            "consecutive_failures": consecutive_failures,
+            "timestamp": datetime.now().isoformat()
+        }
+        try:
+            res = requests.post(webhook_url, json=payload, timeout=5)
+            if res.status_code >= 400:
+                print(f"  [ALERTA] Webhook respondió con código {res.status_code}")
+        except Exception as e:
+            print(f"  [ERROR] Error enviando webhook para {client}: {e}")
+
+    save_state(state)
 
 if __name__ == "__main__":
     run_monitor()
