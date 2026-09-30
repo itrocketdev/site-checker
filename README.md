@@ -67,6 +67,15 @@ Para que el script funcione en GitHub sin exponer la información de tus cliente
 > - `type`: `"wordpress"` (habilita detección de errores silenciosos de WP) o `"standard"` (valida solo código HTTP y conectividad).
 > - `timeout`: Tiempo de espera en segundos específico para ese cliente (por defecto `30`). Útil para sitios con CRM o backends pesados.
 > - `retries`: Cantidad de reintentos específicos antes de considerarlo caído (por defecto `2`).
+> - `headers`: (Opcional) Cabeceras HTTP extra para ese sitio, p. ej. `{"X-Uptime-Token": "secreto"}`. Útil cuando el sitio tiene reCAPTCHA/bot protection (Hostinger LiteShield) y hay que excluir al monitor en el `.htaccess`:
+>   ```apache
+>   ### HOSTINGER LITESHIELD RECAPTCHA, DO NOT REMOVE THIS LINE ###
+>   RewriteEngine On
+>   LsRecaptcha 100
+>   RewriteCond %{HTTP:X-Uptime-Token} !^secreto$
+>   RewriteRule .* - [E=verifycaptcha:drop]
+>   ### HOSTINGER LITESHIELD RECAPTCHA, DO NOT REMOVE THIS LINE ###
+>   ```
 
 ### 3. `CHECK_CONFIRM_FAILURES` (Variable Opcional)
 - **Valor por defecto**: `2`.

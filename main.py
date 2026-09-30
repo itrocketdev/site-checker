@@ -36,6 +36,14 @@ BROWSER_HEADERS = {
     "Upgrade-Insecure-Requests": "1",
 }
 
+# Firmas de páginas de reto/bloqueo de WAF (p. ej. LiteShield/LiteSpeed reCAPTCHA de Hostinger).
+# Si un 403 contiene alguna, el sitio responde pero bloqueó al monitor: no es una caída real.
+WAF_CHALLENGE_PATTERNS = [
+    "recaptcha",
+    "lsrecaptcha",
+    "captcha",
+]
+
 WP_ERROR_PATTERNS = [
     "critical error on this website",
     "Error establishing a database connection",
@@ -100,6 +108,9 @@ def check_site(site):
     client = site.get("client", url)
     site_type = site.get("type", "wordpress").lower()
     timeout = int(site.get("timeout", DEFAULT_TIMEOUT))
+    # Cabeceras extra por sitio (p. ej. un token secreto para que el .htaccess
+    # excluya al monitor del reCAPTCHA de LiteShield). Se suman a las de navegador.
+    headers = {**BROWSER_HEADERS, **(site.get("headers") or {})}
 
     if not url:
         return False, "Configuración inválida: falta el campo 'url'", 0
@@ -108,11 +119,18 @@ def check_site(site):
     try:
         # Timeout granular: (connect_timeout=10, read_timeout=timeout)
         # stream=True para evitar descargar archivos gigantes si la web es pesada
-        with requests.get(url, timeout=(10, timeout), headers=BROWSER_HEADERS, stream=True) as response:
+        with requests.get(url, timeout=(10, timeout), headers=headers, stream=True) as response:
             latency_ms = int((time.time() - start) * 1000)
             
             # 1. Validar Código de Estado (Permitir códigos 2xx exitosos: 200, 202, etc.)
             if not (200 <= response.status_code < 300):
+                if response.status_code in (403, 429):
+                    snippet = next(response.iter_content(chunk_size=32768, decode_unicode=True), "") or ""
+                    if isinstance(snippet, bytes):
+                        snippet = snippet.decode("utf-8", errors="ignore")
+                    if any(p in snippet.lower() for p in WAF_CHALLENGE_PATTERNS):
+                        return False, (f"Status Code: {response.status_code} - Bloqueado por reCAPTCHA/WAF "
+                                       f"(el sitio responde, pero bloquea al monitor)"), latency_ms
                 return False, f"Status Code: {response.status_code}", latency_ms
             
             # 2. Validar Errores Silenciosos de WordPress leyendo solo los primeros 256 KB
@@ -121,6 +139,8 @@ def check_site(site):
                 total_bytes = 0
                 for chunk in response.iter_content(chunk_size=32768, decode_unicode=True):
                     if chunk:
+                        if isinstance(chunk, bytes):
+                            chunk = chunk.decode("utf-8", errors="ignore")
                         content_chunks.append(chunk)
                         total_bytes += len(chunk)
                         if total_bytes >= 262144: # 256 KB
